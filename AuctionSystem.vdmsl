@@ -1,0 +1,48 @@
+types
+  String = seq of char;
+  Bidders = token;
+
+values
+  MIN_PRICE : real = 1000;
+
+state AuctionSystem of
+  reservePrice : [real]
+  currentBid : [real]
+  bidItem : [String]
+  startDate : [nat]
+  endDate : [nat]
+  auctionDate : [nat]
+  bidAmount : [real]
+  stack : seq of Bidders
+inv mk_AuctionSystem(r_price, c_bid, b_item, s_date, e_date, a_date, b_amount, b_arr) ==
+  (b_amount = nil or b_amount <> nil) and
+  (r_price = nil or inPriceRange(r_price)) and
+  (b_item = nil or b_item <> nil) and
+  (c_bid = r_price or c_bid = b_amount or c_bid = nil) and
+  (s_date = nil or s_date <> nil) and
+  (e_date = nil or e_date <> nil and e_date > s_date) and
+  (a_date = nil or a_date <> nil) and
+  (b_arr = [] or b_arr <> [])
+init s == s = mk_AuctionSystem(nil, nil, nil, nil, nil, nil, nil, [])
+end
+
+functions
+  inPriceRange(price : real) result : bool
+  pre true
+  post result = (price >= MIN_PRICE);
+
+operations
+  StartAuction(initPrice: real, b_item: String, s_date: nat, e_date: nat)
+    ext wr reservePrice, startDate, endDate, currentBid, bidItem
+  pre reservePrice = nil and startDate = nil and endDate = nil and bidItem = nil and inPriceRange(initPrice)
+  post reservePrice = initPrice and startDate = s_date and endDate = e_date and currentBid = initPrice and bidItem = b_item;
+
+  PlaceBid(amount: real, date: nat, name: Bidders)
+    ext wr bidAmount, auctionDate, stack, currentBid rd startDate, endDate, reservePrice
+  pre amount > currentBid and amount > (if reservePrice = nil then 0 else reservePrice) and date > startDate and date < endDate
+  post bidAmount = amount and auctionDate = date and stack = [name] ^ stack and currentBid = amount;
+
+  CloseAuction(date: nat) auctionWinner: Bidders, winningBid: real
+    ext rd endDate, stack, currentBid, reservePrice
+  pre currentBid > (if reservePrice = nil then 0 else reservePrice) and stack <> [] and date = endDate
+  post auctionWinner = hd stack and winningBid = currentBid and stack = tl stack;
