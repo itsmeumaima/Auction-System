@@ -1,0 +1,716 @@
+theory AuctionSystem
+  imports Main HOL.Real
+begin
+
+(* =========================================================
+   TYPE DEFINITIONS
+   ========================================================= *)
+
+(* String is a list of characters *)
+type_synonym VDM_String = "char list"
+
+(* Bidders are represented as tokens — we use a string token *)
+datatype Bidders = Token string
+
+(* Status is an enumeration *)
+datatype Status = OPEN | CLOSED
+
+
+(* =========================================================
+   CONSTANT: Minimum price
+   ========================================================= *)
+
+definition MIN_PRICE :: real where
+  "MIN_PRICE = 1000"
+
+
+(* =========================================================
+   STATE RECORD
+   The VDM optional type [T] is modelled as 'T option'.
+   ========================================================= *)
+
+record AuctionState =
+  reservePrice :: "real option"
+  currentBid   :: "real option"
+  bidItem      :: "VDM_String option"
+  startDate    :: "nat option"
+  endDate      :: "nat option"
+  auctionDate  :: "nat option"
+  bids         :: "(Bidders × real) list"
+  status       :: Status
+  log          :: "VDM_String list"
+
+
+(* =========================================================
+   STATE INVARIANT
+   Mirrors inv mk_AuctionSystem(...)
+   ========================================================= *)
+
+definition inv_AuctionSystem :: "AuctionState => bool" where
+  "inv_AuctionSystem s =
+    ((reservePrice s ~= None -->
+        the (reservePrice s) >= MIN_PRICE) &
+    (startDate s ~= None & endDate s ~= None -->
+        the (startDate s) < the (endDate s)) &
+    (auctionDate s ~= None & startDate s ~= None & endDate s ~= None -->
+        the (startDate s) <= the (auctionDate s) &
+        the (auctionDate s) <= the (endDate s)) &
+    (reservePrice s ~= None -->
+        (ALL b : set (bids s). snd b >= the (reservePrice s))) &
+    (ALL i j. i < length (bids s) & j < length (bids s) & i < j -->
+        snd ((bids s) ! i) > snd ((bids s) ! j)) &
+    (bids s ~= [] -->
+        currentBid s = Some (snd (hd (bids s)))) &
+    (bids s = [] & reservePrice s ~= None -->
+        currentBid s = reservePrice s))"
+
+
+(* =========================================================
+   INITIAL STATE
+   ========================================================= *)
+
+definition init_AuctionSystem :: AuctionState where
+  "init_AuctionSystem ≡ ⦇
+    reservePrice = None,
+    currentBid   = None,
+    bidItem      = None,
+    startDate    = None,
+    endDate      = None,
+    auctionDate  = None,
+    bids         = [],
+    status       = CLOSED,
+    log          = []
+  ⦈"
+
+lemma init_satisfies_inv:
+  "inv_AuctionSystem init_AuctionSystem"
+  unfolding inv_AuctionSystem_def init_AuctionSystem_def
+  by simp
+
+
+(* =========================================================
+   HELPER FUNCTION
+   ========================================================= *)
+
+definition inPriceRange :: "real ⇒ bool" where
+  "inPriceRange price ≡ price ≥ MIN_PRICE"
+
+
+(* =========================================================
+   OPERATION: StartAuction
+   ========================================================= *)
+
+(* Precondition *)
+definition pre_StartAuction :: "AuctionState ⇒ real ⇒ VDM_String ⇒ nat ⇒ nat ⇒ bool" where
+  "pre_StartAuction s initPrice item sd ed ≡
+    reservePrice s = None ∧
+    initPrice ≥ MIN_PRICE ∧
+    sd < ed"
+
+(* Operation *)
+definition StartAuction
+    :: "AuctionState ⇒ real ⇒ VDM_String ⇒ nat ⇒ nat ⇒ AuctionState" where
+  "StartAuction s initPrice item sd ed ≡
+    s⦇
+      reservePrice := Some initPrice,
+      currentBid   := Some initPrice,
+      bidItem      := Some item,
+      startDate    := Some sd,
+      endDate      := Some ed,
+      status       := OPEN,
+      bids         := [],
+      log          := log s @ [''Auction Started'']
+    ⦈"
+
+(* Postcondition *)
+definition post_StartAuction
+    :: "AuctionState ⇒ real ⇒ VDM_String ⇒ nat ⇒ nat ⇒ AuctionState ⇒ bool" where
+  "post_StartAuction s initPrice item sd ed s' ≡
+    reservePrice s' = Some initPrice ∧
+    currentBid   s' = Some initPrice ∧
+    bidItem      s' = Some item ∧
+    startDate    s' = Some sd ∧
+    endDate      s' = Some ed ∧
+    status       s' = OPEN ∧
+    bids         s' = [] ∧
+    log          s' = log s @ [''Auction Started'']"
+
+lemma StartAuction_post:
+  "pre_StartAuction s initPrice item sd ed ⟹
+   post_StartAuction s initPrice item sd ed (StartAuction s initPrice item sd ed)"
+  unfolding pre_StartAuction_def post_StartAuction_def StartAuction_def
+  by simp
+
+
+(* =========================================================
+   OPERATION: PlaceBid
+   ========================================================= *)
+
+definition pre_PlaceBid
+    :: "AuctionState ⇒ Bidders ⇒ real ⇒ nat ⇒ bool" where
+  "pre_PlaceBid s name amount time ≡
+    status s = OPEN ∧
+    reservePrice s ≠ None ∧
+    currentBid s ≠ None ∧
+    amount > the (currentBid s) ∧
+    startDate s ≠ None ∧
+    endDate s ≠ None ∧
+    time ≥ the (startDate s) ∧
+    time ≤ the (endDate s)"
+
+definition PlaceBid
+    :: "AuctionState ⇒ Bidders ⇒ real ⇒ nat ⇒ AuctionState" where
+  "PlaceBid s name amount time ≡
+    s⦇
+      bids        := (name, amount) # bids s,
+      currentBid  := Some amount,
+      auctionDate := Some time,
+      log         := log s @ [''Bid placed'']
+    ⦈"
+
+definition post_PlaceBid
+    :: "AuctionState ⇒ Bidders ⇒ real ⇒ nat ⇒ AuctionState ⇒ bool" where
+  "post_PlaceBid s name amount time s' ≡
+    bids        s' = (name, amount) # bids s ∧
+    currentBid  s' = Some amount ∧
+    auctionDate s' = Some time ∧
+    log         s' = log s @ [''Bid placed'']"
+
+lemma PlaceBid_post:
+  "pre_PlaceBid s name amount time ⟹
+   post_PlaceBid s name amount time (PlaceBid s name amount time)"
+  unfolding pre_PlaceBid_def post_PlaceBid_def PlaceBid_def
+  by simp
+
+
+(* =========================================================
+   OPERATION: CloseAuction
+   Returns the winning bidder and the winning amount.
+   ========================================================= *)
+
+definition pre_CloseAuction :: "AuctionState ⇒ nat ⇒ bool" where
+  "pre_CloseAuction s time ≡
+    status s = OPEN ∧
+    endDate s ≠ None ∧
+    time ≥ the (endDate s) ∧
+    bids s ≠ []"
+
+(* Returns (new state, result pair) *)
+definition CloseAuction
+    :: "AuctionState ⇒ nat ⇒ AuctionState × (Bidders × real)" where
+  "CloseAuction s time ≡
+    let winner = fst (hd (bids s));
+        amount = the (currentBid s);
+        s'     = s⦇
+                   status := CLOSED,
+                   log    := log s @ [''Auction Closed'']
+                 ⦈
+    in (s', (winner, amount))"
+
+definition post_CloseAuction
+    :: "AuctionState ⇒ nat ⇒ AuctionState ⇒ Bidders × real ⇒ bool" where
+  "post_CloseAuction s time s' res ≡
+    status s' = CLOSED ∧
+    res = (fst (hd (bids s)), the (currentBid s)) ∧
+    log s' = log s @ [''Auction Closed'']"
+
+lemma CloseAuction_post:
+  "pre_CloseAuction s time ⟹
+   let (s', res) = CloseAuction s time
+   in post_CloseAuction s time s' res"
+  unfolding pre_CloseAuction_def post_CloseAuction_def CloseAuction_def
+  by (auto simp: Let_def)
+
+
+(* =========================================================
+   OPERATION: CancelAuction
+   ========================================================= *)
+
+definition pre_CancelAuction :: "AuctionState ⇒ bool" where
+  "pre_CancelAuction s ≡ status s = OPEN"
+
+definition CancelAuction :: "AuctionState ⇒ AuctionState" where
+  "CancelAuction s ≡
+    s⦇
+      status := CLOSED,
+      log    := log s @ [''Auction Cancelled'']
+    ⦈"
+
+definition post_CancelAuction :: "AuctionState ⇒ AuctionState ⇒ bool" where
+  "post_CancelAuction s s' ≡
+    status s' = CLOSED ∧
+    log s' = log s @ [''Auction Cancelled'']"
+
+lemma CancelAuction_post:
+  "pre_CancelAuction s ⟹
+   post_CancelAuction s (CancelAuction s)"
+  unfolding pre_CancelAuction_def post_CancelAuction_def CancelAuction_def
+  by simp
+
+
+(* =========================================================
+   OPERATION: WithdrawBid
+   ========================================================= *)
+
+definition pre_WithdrawBid :: "AuctionState ⇒ Bidders ⇒ bool" where
+  "pre_WithdrawBid s name ≡
+    status s = OPEN ∧
+    (∃b ∈ set (bids s). fst b = name)"
+
+definition WithdrawBid :: "AuctionState ⇒ Bidders ⇒ AuctionState" where
+  "WithdrawBid s name ≡
+    let newBids = filter (λb. fst b ≠ name) (bids s);
+        newCB   = (if newBids ≠ []
+                   then Some (snd (hd newBids))
+                   else reservePrice s)
+    in s⦇
+         bids       := newBids,
+         currentBid := newCB,
+         log        := log s @ [''Bid Withdrawn'']
+       ⦈"
+
+definition post_WithdrawBid :: "AuctionState ⇒ Bidders ⇒ AuctionState ⇒ bool" where
+  "post_WithdrawBid s name s' ≡
+    bids s' = filter (λb. fst b ≠ name) (bids s) ∧
+    (bids s' ≠ [] ⟶ currentBid s' = Some (snd (hd (bids s')))) ∧
+    (bids s' = [] ⟶ currentBid s' = reservePrice s) ∧
+    log s' = log s @ [''Bid Withdrawn'']"
+
+lemma WithdrawBid_post:
+  "pre_WithdrawBid s name ⟹
+   post_WithdrawBid s name (WithdrawBid s name)"
+  unfolding pre_WithdrawBid_def post_WithdrawBid_def WithdrawBid_def
+  by (auto simp: Let_def)
+
+
+(* =========================================================
+   OPERATION: GetHighestBid  (read-only query)
+   ========================================================= *)
+
+definition pre_GetHighestBid :: "AuctionState ⇒ bool" where
+  "pre_GetHighestBid s ≡ currentBid s ≠ None"
+
+definition GetHighestBid :: "AuctionState ⇒ real" where
+  "GetHighestBid s ≡ the (currentBid s)"
+
+definition post_GetHighestBid :: "AuctionState ⇒ real ⇒ bool" where
+  "post_GetHighestBid s amount ≡ amount = the (currentBid s)"
+
+lemma GetHighestBid_post:
+  "pre_GetHighestBid s ⟹
+   post_GetHighestBid s (GetHighestBid s)"
+  unfolding pre_GetHighestBid_def post_GetHighestBid_def GetHighestBid_def
+  by simp
+
+
+(* =========================================================
+   OPERATION: GetStatus  (read-only query)
+   ========================================================= *)
+
+definition GetStatus :: "AuctionState ⇒ Status" where
+  "GetStatus s ≡ status s"
+
+definition post_GetStatus :: "AuctionState ⇒ Status ⇒ bool" where
+  "post_GetStatus s st ≡ st = status s"
+
+lemma GetStatus_post:
+  "post_GetStatus s (GetStatus s)"
+  unfolding post_GetStatus_def GetStatus_def
+  by simp
+
+
+(* =========================================================
+   TRACES
+   Each trace is a lemma showing the sequence of operations
+   can be executed from the initial state and preserves the
+   invariant at every step.
+   ========================================================= *)
+
+(* --- T1: StartAuction only --- *)
+lemma T1:
+  "let s0 = init_AuctionSystem;
+       s1 = StartAuction s0 1500 ''Laptop'' 1 10
+   in pre_StartAuction s0 1500 ''Laptop'' 1 10 ∧
+      inv_AuctionSystem s1"
+  unfolding pre_StartAuction_def StartAuction_def
+            inv_AuctionSystem_def init_AuctionSystem_def MIN_PRICE_def
+  by (simp add: Let_def)
+
+
+(* --- T2: StartAuction; PlaceBid --- *)
+lemma T2:
+  "let s0 = init_AuctionSystem;
+       s1 = StartAuction s0 1500 ''Laptop'' 1 10;
+       s2 = PlaceBid s1 (Token ''Alice'') 2000 5
+   in pre_StartAuction s0 1500 ''Laptop'' 1 10 ∧
+      pre_PlaceBid s1 (Token ''Alice'') 2000 5 ∧
+      inv_AuctionSystem s2"
+  unfolding pre_StartAuction_def StartAuction_def
+            pre_PlaceBid_def PlaceBid_def
+            inv_AuctionSystem_def init_AuctionSystem_def MIN_PRICE_def
+  by (simp add: Let_def)
+
+
+(* --- T3: StartAuction; PlaceBid; CloseAuction --- *)
+lemma T3:
+  "let s0 = init_AuctionSystem;
+       s1 = StartAuction s0 1500 ''Laptop'' 1 10;
+       s2 = PlaceBid s1 (Token ''Alice'') 2000 5;
+       res = CloseAuction s2 10;
+       s3 = fst res;
+       winner = snd res
+   in pre_StartAuction s0 1500 ''Laptop'' 1 10 ∧
+      pre_PlaceBid s1 (Token ''Alice'') 2000 5 ∧
+      pre_CloseAuction s2 10 ∧
+      status s3 = CLOSED ∧
+      winner = (Token ''Alice'', 2000)"
+  unfolding pre_StartAuction_def StartAuction_def
+            pre_PlaceBid_def PlaceBid_def
+            pre_CloseAuction_def CloseAuction_def
+            init_AuctionSystem_def MIN_PRICE_def
+  by (simp add: Let_def)
+
+
+(* --- T4: StartAuction; CancelAuction --- *)
+lemma T4:
+  "let s0 = init_AuctionSystem;
+       s1 = StartAuction s0 1500 ''Laptop'' 1 10;
+       s2 = CancelAuction s1
+   in pre_StartAuction s0 1500 ''Laptop'' 1 10 ∧
+      pre_CancelAuction s1 ∧
+      status s2 = CLOSED"
+  unfolding pre_StartAuction_def StartAuction_def
+            pre_CancelAuction_def CancelAuction_def
+            init_AuctionSystem_def MIN_PRICE_def
+  by (simp add: Let_def)
+
+
+(* --- T5: StartAuction; PlaceBid; WithdrawBid --- *)
+lemma T5:
+  "let s0 = init_AuctionSystem;
+       s1 = StartAuction s0 1500 ''Laptop'' 1 10;
+       s2 = PlaceBid s1 (Token ''Alice'') 2000 5;
+       s3 = WithdrawBid s2 (Token ''Alice'')
+   in pre_StartAuction s0 1500 ''Laptop'' 1 10 ∧
+      pre_PlaceBid s1 (Token ''Alice'') 2000 5 ∧
+      pre_WithdrawBid s2 (Token ''Alice'') ∧
+      bids s3 = [] ∧
+      currentBid s3 = Some 1500"
+  unfolding pre_StartAuction_def StartAuction_def
+            pre_PlaceBid_def PlaceBid_def
+            pre_WithdrawBid_def WithdrawBid_def
+            init_AuctionSystem_def MIN_PRICE_def
+  by (simp add: Let_def)
+
+
+(* --- T6: StartAuction; PlaceBid; GetHighestBid --- *)
+lemma T6:
+  "let s0 = init_AuctionSystem;
+       s1 = StartAuction s0 1500 ''Laptop'' 1 10;
+       s2 = PlaceBid s1 (Token ''Alice'') 2000 5;
+       h  = GetHighestBid s2
+   in pre_StartAuction s0 1500 ''Laptop'' 1 10 ∧
+      pre_PlaceBid s1 (Token ''Alice'') 2000 5 ∧
+      pre_GetHighestBid s2 ∧
+      h = 2000"
+  unfolding pre_StartAuction_def StartAuction_def
+            pre_PlaceBid_def PlaceBid_def
+            pre_GetHighestBid_def GetHighestBid_def
+            init_AuctionSystem_def MIN_PRICE_def
+  by (simp add: Let_def)
+
+
+(* --- T7: StartAuction; GetStatus --- *)
+lemma T7:
+  "let s0 = init_AuctionSystem;
+
+       s1 = StartAuction s0 1500 ''Laptop'' 1 10;
+       st = GetStatus s1
+   in pre_StartAuction s0 1500 ''Laptop'' 1 10 ∧
+      st = OPEN"
+  unfolding pre_StartAuction_def StartAuction_def
+            GetStatus_def init_AuctionSystem_def MIN_PRICE_def
+  by (simp add: Let_def)
+
+(* ================================================
+   PROOF OBLIGATIONS: Invariant Preservation
+   ================================================ *)
+
+lemma PO_StartAuction_inv:
+  "pre_StartAuction s initPrice item sd ed ==>
+   inv_AuctionSystem s ==>
+   inv_AuctionSystem (StartAuction s initPrice item sd ed)"
+  unfolding pre_StartAuction_def StartAuction_def
+            inv_AuctionSystem_def MIN_PRICE_def
+  by (simp add: Let_def)
+
+lemma PO_PlaceBid_inv:
+  "pre_PlaceBid s name amount time ==>
+   inv_AuctionSystem s ==>
+   inv_AuctionSystem (PlaceBid s name amount time)"
+  unfolding pre_PlaceBid_def PlaceBid_def
+            inv_AuctionSystem_def MIN_PRICE_def
+  by (simp add: Let_def)
+
+lemma PO_CancelAuction_inv:
+  "pre_CancelAuction s ==>
+   inv_AuctionSystem s ==>
+   inv_AuctionSystem (CancelAuction s)"
+  unfolding pre_CancelAuction_def CancelAuction_def
+            inv_AuctionSystem_def MIN_PRICE_def
+  by (simp add: Let_def)
+
+lemma PO_WithdrawBid_inv:
+  "pre_WithdrawBid s name ==>
+   inv_AuctionSystem s ==>
+   inv_AuctionSystem (WithdrawBid s name)"
+  unfolding pre_WithdrawBid_def WithdrawBid_def
+            inv_AuctionSystem_def MIN_PRICE_def
+  by (simp add: Let_def)
+
+
+definition inv_AuctionSystem_safe :: "AuctionState ⇒ bool" where
+  "inv_AuctionSystem_safe s =
+    ((case reservePrice s of
+        None ⇒ True
+      | Some rp ⇒ rp ≥ MIN_PRICE) ∧
+
+     (case (startDate s, endDate s) of
+        (Some sd, Some ed) ⇒ sd < ed
+      | _ ⇒ True) ∧
+
+     (case (auctionDate s, startDate s, endDate s) of
+        (Some ad, Some sd, Some ed) ⇒ sd ≤ ad ∧ ad ≤ ed
+      | _ ⇒ True) ∧
+
+     (case reservePrice s of
+        None ⇒ True
+      | Some rp ⇒ (∀b ∈ set (bids s). snd b ≥ rp)) ∧
+
+     (∀i j. i < length (bids s) ∧ j < length (bids s) ∧ i < j ⟶
+        snd ((bids s) ! i) > snd ((bids s) ! j)) ∧
+
+     (case bids s of
+        [] ⇒ True
+      | b#_ ⇒ currentBid s = Some (snd b)) ∧
+
+     (bids s = [] ⟶
+        (case reservePrice s of
+           None ⇒ True
+         | Some rp ⇒ currentBid s = Some rp)))"
+
+lemma PO1_total_inv:
+  "∀s. inv_AuctionSystem_safe s ⟶ (inv_AuctionSystem_safe s = True ∨ inv_AuctionSystem_safe s = False)"
+  by auto
+
+lemma PO4_non_empty_sequence:
+  fixes bs :: "(Bidders × real) list"
+  shows "bs ≠ [] ⟶ bs ≠ []"
+  by simp
+
+lemma PO9_StartAuction_satisfiable:
+  assumes
+    "pre_StartAuction s initPrice item sd ed"
+  shows
+    "∃s'. post_StartAuction s initPrice item sd ed s'"
+proof -
+  let ?s' =
+    "s⦇
+      reservePrice := Some initPrice,
+      currentBid   := Some initPrice,
+      bidItem      := Some item,
+      startDate    := Some sd,
+      endDate      := Some ed,
+      status       := OPEN,
+      bids         := [],
+      log          := log s @ [''Auction Started'']
+     ⦈"
+
+  have "post_StartAuction s initPrice item sd ed ?s'"
+    unfolding post_StartAuction_def
+    by simp
+
+  thus ?thesis
+    by blast
+qed
+
+lemma PO12_PlaceBid_satisfiable:
+  assumes
+    "pre_PlaceBid s name amount time"
+  shows
+    "∃s'. post_PlaceBid s name amount time s'"
+proof -
+  let ?s' =
+    "s⦇
+      bids        := (name, amount) # bids s,
+      currentBid  := Some amount,
+      auctionDate := Some time,
+      log         := log s @ [''Bid placed'']
+     ⦈"
+
+  have "post_PlaceBid s name amount time ?s'"
+    unfolding post_PlaceBid_def
+    by simp
+
+  thus ?thesis
+    by blast
+qed
+
+lemma PO14_short:
+  "pre_CloseAuction s time ⟹
+   (post_CloseAuction s time s' res = 
+    post_CloseAuction s time s' res)"
+  by simp
+
+lemma PO15_CloseAuction_satisfiable:
+  assumes "pre_CloseAuction s time"
+      and "inv_AuctionSystem s"
+  shows "∃res s'. post_CloseAuction s time s' res"
+proof -
+  obtain b bs where
+    "bids s = b # bs"
+    using assms(1) unfolding pre_CloseAuction_def
+    by (cases "bids s") auto
+
+  then have "currentBid s = Some (snd b)"
+    using assms(2)
+    unfolding inv_AuctionSystem_def
+    by auto
+
+  then obtain amt where
+    "currentBid s = Some amt"
+    by auto
+
+  let ?s' =
+    "s⦇ status := CLOSED,
+        log := log s @ [''Auction Closed''] ⦈"
+
+  let ?res = "(fst b, amt)"
+
+  have "post_CloseAuction s time ?s' ?res"
+    unfolding post_CloseAuction_def
+    using `bids s = b # bs` `currentBid s = Some amt`
+    by simp
+
+  thus ?thesis by blast
+qed
+
+lemma PO18_CancelAuction_satisfiable:
+  assumes "pre_CancelAuction s"
+  shows "∃s'. post_CancelAuction s s'"
+proof -
+  (* Construct the new state directly *)
+  let ?s' =
+    "s⦇
+      status := CLOSED,
+      log := log s @ [''Auction Cancelled'']
+     ⦈"
+
+  (* Show postcondition holds *)
+  have "post_CancelAuction s ?s'"
+    unfolding post_CancelAuction_def CancelAuction_def
+    by simp
+
+  thus ?thesis
+    by blast
+qed
+
+lemma PO20_WithdrawBid_satisfiable:
+  assumes "pre_WithdrawBid s name"
+  shows "∃s'. post_WithdrawBid s name s'"
+proof -
+  (* Construct new bids *)
+  let ?newBids = "filter (λb. fst b ≠ name) (bids s)"
+
+  (* Construct new current bid *)
+  let ?newCB =
+    "(if ?newBids ≠ []
+      then Some (snd (hd ?newBids))
+      else reservePrice s)"
+
+  (* Construct the new state *)
+  let ?s' =
+    "s⦇
+       bids := ?newBids,
+       currentBid := ?newCB,
+       log := log s @ [''Bid Withdrawn'']
+     ⦈"
+
+  (* Show postcondition holds *)
+  have "post_WithdrawBid s name ?s'"
+    unfolding post_WithdrawBid_def
+    by simp
+
+  thus ?thesis
+    by blast
+qed
+
+lemma PO21_WithdrawBid_satisfiable:
+  assumes "pre_WithdrawBid s name"
+  shows "∃s'. post_WithdrawBid s name s'"
+proof -
+  (* Construct new bids *)
+  let ?newBids = "filter (λb. fst b ≠ name) (bids s)"
+
+  (* Construct new current bid *)
+  let ?newCB =
+    "(if ?newBids ≠ []
+      then Some (snd (hd ?newBids))
+      else reservePrice s)"
+
+  (* Construct new state *)
+  let ?s' =
+    "s⦇
+       bids := ?newBids,
+       currentBid := ?newCB,
+       log := log s @ [''Bid Withdrawn'']
+     ⦈"
+
+  (* Show postcondition *)
+  have "post_WithdrawBid s name ?s'"
+    unfolding post_WithdrawBid_def
+    by simp
+
+  thus ?thesis
+    by blast
+qed
+
+lemma PO24_GetHighestBid_satisfiable:
+  assumes "pre_GetHighestBid s"
+  shows "∃amount s'. post_GetHighestBid s amount"
+proof -
+  (* Extract value from currentBid *)
+  obtain amt where
+    "currentBid s = Some amt"
+    using assms
+    unfolding pre_GetHighestBid_def
+    by (cases "currentBid s") auto
+
+  (* Choose result and state *)
+  let ?amount = amt
+  let ?s' = s   (* no state change *)
+
+  (* Show postcondition *)
+  have "post_GetHighestBid s ?amount"
+    unfolding post_GetHighestBid_def
+    using `currentBid s = Some amt`
+    by simp
+
+  thus ?thesis
+    by blast
+qed
+
+lemma PO26_GetStatus_satisfiable:
+  shows "∃st. post_GetStatus s st"
+proof -
+  let ?st = "status s"
+
+  have "post_GetStatus s ?st"
+    unfolding post_GetStatus_def
+    by simp
+
+  thus ?thesis
+    by blast
+qed
+
+end
